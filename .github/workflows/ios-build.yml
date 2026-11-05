@@ -1,0 +1,110 @@
+
+name: Build Universal Studio Code IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build iPad IPA
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Find and extract project ZIP
+        run: |
+          set -euo pipefail
+
+          ZIP_FILE="$GITHUB_WORKSPACE/Universal-Studio-Code-Repository.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: Universal-Studio-Code-Repository.zip not found!"
+            echo "Upload the ZIP to the repository root."
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/uscode-source"
+
+          unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/uscode-source"
+
+          PROJECT_FILE=$(find "$RUNNER_TEMP/uscode-source" \
+            -name project.yml -print -quit)
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: project.yml was not found inside ZIP."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$PROJECT_FILE")
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Project extracted successfully:"
+          ls -la "$PROJECT_DIR"
+
+      - name: Generate Xcode project
+        run: |
+          cd "$PROJECT_DIR"
+          xcodegen generate
+
+      - name: Build iOS application
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          xcodebuild \
+            -project USCode.xcodeproj \
+            -scheme USCode \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/USCodeBuild" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package actual IPA
+        run: |
+          set -euo pipefail
+
+          APP_DIR="$RUNNER_TEMP/USCodeBuild/Build/Products/Release-iphoneos"
+
+          APP_PATH=$(find "$APP_DIR" \
+            -maxdepth 1 -type d -name "*.app" -print -quit)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: Compiled .app not found."
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+
+          ditto "$APP_PATH" \
+            "$RUNNER_TEMP/ipa/Payload/$(basename "$APP_PATH")"
+
+          cd "$RUNNER_TEMP/ipa"
+
+          zip -qry "$GITHUB_WORKSPACE/US-Code.ipa" Payload
+
+          echo "IPA successfully packaged!"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: US-Code-iPad-IPA
+          path: US-Code.ipa
+          if-no-files-found: error
+          retention-days: 14
